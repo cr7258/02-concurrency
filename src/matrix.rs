@@ -1,4 +1,4 @@
-use crate::dot_product;
+use crate::{dot_product, Vector};
 use anyhow::{anyhow, Result};
 use std::{
     fmt,
@@ -20,8 +20,8 @@ pub struct Matrix<T> {
 
 pub struct MsgInput<T> {
     idx: usize,
-    row: Vec<T>,
-    col: Vec<T>,
+    row: Vector<T>,
+    col: Vector<T>,
 }
 
 pub struct MsgOutput<T> {
@@ -60,7 +60,7 @@ where
             });
             tx
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>(); // collect 方法会将迭代器转换为 Vec
 
     // generate 4 threads which receive msg and do dot product
     let matrix_len = a.row * b.col;
@@ -69,15 +69,23 @@ where
 
     for i in 0..a.row {
         for j in 0..b.col {
-            let row = a.data[i * a.col..(i + 1) * a.col].to_vec();
+            // 从矩阵 a 中取出一行
+            // a.data[i * a.col..(i + 1) * a.col] 是一个切片操作，它从 a.data 中提取出一段连续的元素。
+            // 这段元素的开始位置是 i * a.col，结束位置是 (i + 1) * a.col。
+            let row = Vector::new(&a.data[i * a.col..(i + 1) * a.col]);
+            // 从矩阵 b 中取出一列
+            // b.data[j..] 是一个切片操作，它从 b.data 中提取出从第 j 个元素开始到最后一个元素的所有元素。
+            // .iter() 创建一个迭代器，.step_by(b.col) 指定每 b.col 步取一个元素，这样就可以取出矩阵 b 的第 j 列的所有元素。、
             let col_data = b.data[j..]
                 .iter()
                 .step_by(b.col)
                 .copied()
                 .collect::<Vec<_>>();
-
+            let col = Vector::new(col_data);
+            // 计算矩阵 a 的第 i 行和矩阵 b 的第 j 列的点积，作为结果矩阵的第 i 行第 j 列的值
             let idx = i * b.col + j;
-            let input = MsgInput::new(idx, row, col_data);
+            // 每个点积计算任务都会交给一个线程处理
+            let input = MsgInput::new(idx, row, col);
             let (tx, rx) = oneshot::channel();
             let msg = Msg::new(input, tx);
             if let Err(e) = senders[idx % NUM_THREADS].send(msg) {
@@ -146,7 +154,7 @@ where
 }
 
 impl<T> MsgInput<T> {
-    pub fn new(idx: usize, row: Vec<T>, col: Vec<T>) -> Self {
+    pub fn new(idx: usize, row: Vector<T>, col: Vector<T>) -> Self {
         Self { idx, row, col }
     }
 }
@@ -157,6 +165,7 @@ impl<T> Msg<T> {
     }
 }
 
+// 通过实现 Mul trait，我们可以在 Matrix 上使用 * 运算符，这样就可以更方便地进行矩阵乘法运算。
 impl<T> Mul for Matrix<T>
 where
     T: Copy + Default + Add<Output = T> + AddAssign + Mul<Output = T> + Send + 'static,

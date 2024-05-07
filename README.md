@@ -124,3 +124,72 @@ Rust 的 oneshot 库提供了一种用于在异步编程中进行一次性通信
 ```rust
 oneshot = "0.1.6"
 ```
+
+### 主要代码
+
+这段代码使用了多线程和消息传递来并行计算结果矩阵的每个元素。
+
+1. 首先，它创建了一组发送者（`senders`），每个发送者都与一个新线程关联。每个线程都会接收消息，计算点积，并将结果发送回主线程。map 迭代器是惰性的，也就是说，它不会立即执行闭包并产生结果，而是在需要的时候才会执行。
+
+```rust
+let senders = (0..NUM_THREADS)
+    .map(|_| {
+        let (tx, rx) = mpsc::channel::<Msg<T>>();
+        thread::spawn(move || {
+            for msg in rx {
+                let value = dot_product(msg.input.row, msg.input.col)?;
+                if let Err(e) = msg.sender.send(MsgOutput {
+                    idx: msg.input.idx,
+                    value,
+                }) {
+                    eprintln!("Send error: {:?}", e);
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+        tx
+    })
+    .collect::<Vec<_>>();
+```
+
+2. 然后，它创建了一个接收者（`receivers`）的数组，用于接收每个线程的计算结果。同时，它也创建了一个数据（`data`）的数组，用于存储最终的矩阵乘法结果。
+
+```rust
+let matrix_len = a.row * b.col;
+let mut data = vec![T::default(); matrix_len];
+let mut receivers = Vec::with_capacity(matrix_len);
+```
+
+3. 接下来，它遍历输入矩阵的每一行和每一列，计算结果矩阵的每个元素。对于每个元素，它创建一个消息（`Msg`），包含了计算该元素所需的行和列，然后发送给一个线程。同时，它也创建了一个接收者（`rx`），用于接收线程的计算结果。
+
+```rust
+for i in 0..a.row {
+    for j in 0..b.col {
+        let row = Vector::new(&a.data[i * a.col..(i + 1) * a.col]);
+        let col_data = b.data[j..]
+            .iter()
+            .step_by(b.col)
+            .copied()
+            .collect::<Vec<_>>();
+
+        let col = Vector::new(col_data);
+        let idx = i * b.col + j;
+        let input = MsgInput::new(idx, row, col);
+        let (tx, rx) = oneshot::channel();
+        let msg = Msg::new(input, tx);
+        if let Err(e) = senders[idx % NUM_THREADS].send(msg) {
+            eprintln!("Send error: {:?}", e);
+        }
+        receivers.push(rx);
+    }
+}
+```
+
+4. 最后，它等待所有线程完成计算，并收集结果。每个线程的结果都会被存储在 `data` 数组的相应位置。
+
+```rust
+for rx in receivers {
+    let output = rx.recv()?;
+    data[output.idx] = output.value;
+}
+```
