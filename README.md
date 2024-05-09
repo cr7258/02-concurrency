@@ -1,5 +1,11 @@
 # 第二周：时空之门：从单线程到多线程，从同步到异步
 
+## Rust 并发
+
+- 消息传递（Message passing）并发，其中 channel 被用来在线程间传递消息。
+- 共享状态（Shared state）并发，其中多个线程可以访问同一片数据。
+- Sync 和 Send trait，将 Rust 的并发保证扩展到用户定义的以及标准库提供的类型中。
+
 ## 简单支持 Rust 多线程
 
 ### 主要代码
@@ -115,7 +121,7 @@ a = [[1, 2, 3],
    a.data[1 * 3 + 2] = a.data[5] = 6
    ```
 
-## 使矩阵乘法支持多线程
+## 使矩阵乘法支持多线程（消息传递并发）
 
 ### 添加依赖
 
@@ -193,3 +199,93 @@ for rx in receivers {
     data[output.idx] = output.value;
 }
 ```
+
+### 验证效果
+
+```rust
+cargo run --example matrix
+
+a * b: {22 28, 49 64}
+```
+
+
+## 支持多线程修改 HashMap（共享内存）
+
+### 主要代码
+
+`data` 字段被包装在一个 `Mutex` 中，以实现线程安全。`Mutex` 是一个互斥锁，它保证了在任何时候只有一个线程可以访问 `data`。当一个线程正在访问 `data` 时，其他线程必须等待，直到该线程释放了锁。
+
+然后，`Mutex<HashMap<String, i64>>` 被包装在一个 `Arc` 中。`Arc` 是一个原子引用计数类型，它允许多个线程共享 `data` 的所有权。当最后一个拥有 `data` 所有权的线程结束时，`data` 将被自动清理。
+
+这个结构体实现了 `Clone` trait，这意味着你可以创建 `Metrics` 的副本。但是，由于 `data` 字段是 `Arc<Mutex<HashMap<String, i64>>>` 类型，所以克隆 `Metrics` 实际上只会增加 `data` 的引用计数，而不会复制 `data` 的数据。这样，即使 `Metrics` 被克隆了多次，多个 `Metrics` 实例也可以安全地共享同一份 `data` 数据。
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    data: Arc<Mutex<HashMap<String, i64>>>
+}
+```
+
+这段代码是 `Metrics` 结构体的实现部分，它定义了三个方法：`new`，`inc` 和 `snapshot`。
+
+- `new` 方法用于创建一个新的 `Metrics` 实例。它初始化了一个空的 `HashMap`，并将其包装在 `Arc<Mutex<HashMap<String, i64>>>` 中。
+- `inc` 方法用于增加指定键的计数器。它首先获取 `data` 的锁，然后在 `HashMap` 中查找指定的键。如果找到了，就增加计数器的值；如果没有找到，就插入一个新的计数器。
+- `snapshot` 方法用于获取当前的计数器快照。它首先获取 `data` 的锁，然后克隆 `HashMap`，并返回克隆的结果。
+- 注意虽然我们在 `inc` 和 `snapshot` 方法中没有显式地释放锁，但当 `data` 的引用离开作用域时，锁会自动释放。
+
+```rust
+impl Metrics {
+    pub fn new() -> Self {
+        Metrics {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn inc(&self, key: impl Into<String>) -> Result<()> {
+        let mut data = self.data.lock().map_err(|e| anyhow!(e.to_string()))?;
+        let counter = data.entry(key.into()).or_insert(0);
+        *counter += 1;
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Result<HashMap<String, i64>> {
+        Ok(self.data.lock().map_err(|e| anyhow!(e.to_string()))?.clone())
+    }
+}
+```
+
+分别创建两个线程池，执行不同的任务，`metrics.clone()` 是为了创建 `metrics` 的一个克隆，这样每个线程都可以拥有 `metrics` 的一个独立副本。
+
+这是因为在 Rust 中，变量默认是移动语义（move semantics），也就是说，当你把一个变量传递给函数时，这个变量的所有权会被移动到函数中，原来的变量就不能再使用了。但在这里，我们需要在多个线程中共享 `metrics`，所以不能把 `metrics` 的所有权移动到一个线程中，而是需要创建 `metrics` 的克隆。
+
+值得注意的是，虽然我们创建了 `metrics` 的克隆，但实际上 `metrics.data`（即 `Arc<Mutex<HashMap<String, i64>>>`）的数据并没有被复制。这是因为 `Arc`（Atomic Reference Counting，原子引用计数）类型的 `clone` 方法只会增加引用计数，而不会复制数据。这样，多个线程可以安全地共享同一份数据，而不需要复制数据
+
+```rust
+ for idx in 0..N {
+     task_worker(idx, metrics.clone()); // Metrics {data: Arc::clone(&metrics.data)}
+ }
+
+ for _ in 0..M {
+     request_worker(metrics.clone());
+ }
+```
+
+### 验证效果
+
+```bash
+cargo run --example metrics
+
+Ok({})
+Ok({"req.page.4": 4, "req.page.3": 5, "req.page.2": 3, "req.page.1": 3, "call.thread.worker.0": 1, "call.thread.worker.1": 1})
+Ok({"req.page.4": 9, "req.page.3": 9, "req.page.2": 7, "req.page.1": 9, "call.thread.worker.0": 2, "call.thread.worker.1": 1})
+Ok({"req.page.4": 12, "req.page.3": 12, "req.page.2": 14, "req.page.1": 12, "call.thread.worker.0": 2, "call.thread.worker.1": 2})
+Ok({"req.page.4": 15, "req.page.3": 18, "req.page.2": 20, "req.page.1": 16, "call.thread.worker.0": 3, "call.thread.worker.1": 2})
+Ok({"req.page.4": 19, "req.page.3": 20, "req.page.2": 27, "req.page.1": 21, "call.thread.worker.0": 5, "call.thread.worker.1": 3})
+Ok({"req.page.4": 26, "req.page.3": 28, "req.page.2": 32, "req.page.1": 25, "call.thread.worker.0": 5, "call.thread.worker.1": 3})
+Ok({"req.page.4": 31, "req.page.3": 31, "req.page.2": 36, "req.page.1": 30, "call.thread.worker.0": 6, "call.thread.worker.1": 4})
+Ok({"req.page.4": 34, "req.page.3": 40, "req.page.2": 39, "req.page.1": 33, "call.thread.worker.0": 6, "call.thread.worker.1": 5})
+```
+
+## 参考资料
+
+- [Rust 无畏并发](https://kaisery.github.io/trpl-zh-cn/ch16-00-concurrency.html)
