@@ -286,6 +286,57 @@ Ok({"req.page.4": 31, "req.page.3": 31, "req.page.2": 36, "req.page.1": 30, "cal
 Ok({"req.page.4": 34, "req.page.3": 40, "req.page.2": 39, "req.page.1": 33, "call.thread.worker.0": 6, "call.thread.worker.1": 5})
 ```
 
+## 使用 RwLock 替换 Mutex
+
+### 主要代码
+
+使用 RwLock 代替 Mutex，RwLock 允许多个读取者同时访问数据，提高了并发性能。当有多个线程需要读取 HashMap 中的数据时，它们可以同时获取读锁，而无需相互阻塞。这对于读多写少的场景特别有利，因为读取操作不会相互干扰，可以并发进行。
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    data: Arc<RwLock<HashMap<String, i64>>>,
+}
+```
+
+写方法使用 `write` 方法获取写锁，读方法使用 `read` 方法获取读锁。
+
+```rust
+ pub fn inc(&self, key: impl Into<String>) -> Result<()> {
+     let mut data = self.data.write().map_err(|e| anyhow!(e.to_string()))?;
+     let counter = data.entry(key.into()).or_insert(0);
+     *counter += 1;
+     Ok(())
+ }
+
+ pub fn snapshot(&self) -> Result<HashMap<String, i64>> {
+     Ok(self
+         .data
+         .read()
+         .map_err(|e| anyhow!(e.to_string()))?
+         .clone())
+ }
+```
+
+### 验证效果
+
+```bash
+cargo run --example metrics
+
+req.page.4: 8
+req.page.1: 4
+req.page.2: 1
+call.thread.worker.0: 1
+req.page.3: 3
+
+req.page.4: 13
+call.thread.worker.1: 1
+req.page.1: 9
+req.page.2: 3
+call.thread.worker.0: 2
+req.page.3: 5
+```
+
 ## 参考资料
 
 - [Rust 无畏并发](https://kaisery.github.io/trpl-zh-cn/ch16-00-concurrency.html)
