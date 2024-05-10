@@ -337,6 +337,56 @@ call.thread.worker.0: 2
 req.page.3: 5
 ```
 
+## 使用 DashMap 替换 RwLock 和 HashMap
+
+DashMap 使用了一种称为锁分段（lock-striping）的技术，它将 HashMap 分成多个段，每个段都有自己的锁，进一步减少锁的粒度。这样，不同的线程可以同时访问不同的段，进一步提高了并发性能。
+
+### 添加依赖
+
+```rust
+dashmap = "5.5.3"
+```
+
+### 主要代码
+
+使用 DashMap 替换 RwLock 和 HashMap，DashMap 是一个线程安全的 HashMap，它允许多个线程同时读取和写入数据，而无需显式地获取锁。
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    data: Arc<DashMap<String, i64>>,
+}
+```
+
+```rust
+pub fn inc(&self, key: impl Into<String>) -> Result<()> {
+  // 使用 DashMap 就不需要先获取锁了
+  let mut counter = self.data.entry(key.into()).or_insert(0);
+  *counter += 1;
+  Ok(())
+}
+```
+
+### 验证效果
+
+```bash
+cargo run --example metrics
+
+req.page.2: 6
+req.page.3: 4
+req.page.4: 7
+req.page.1: 4
+
+req.page.2: 8
+call.thread.worker.1: 1
+req.page.3: 7
+req.page.4: 15
+req.page.1: 8
+call.thread.worker.0: 1
+```
+
+
 ## 参考资料
 
 - [Rust 无畏并发](https://kaisery.github.io/trpl-zh-cn/ch16-00-concurrency.html)
+- [透过 rust 探索系统的本原：并发篇](https://mp.weixin.qq.com/s/9g0wVT-5PpmXRoKJZo-skA)
