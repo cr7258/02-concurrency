@@ -385,8 +385,66 @@ req.page.1: 8
 call.thread.worker.0: 1
 ```
 
+## 使用 Atomic 原子类型
+
+Mutex用起来简单，但是无法并发读，RwLock可以并发读，但是使用场景较为受限且性能不够，那么有没有一种全能性选手呢？ 欢迎我们的Atomic闪亮登场。
+
+从 Rust1.34 版本后，就正式支持原子类型。原子指的是一系列不可被 CPU 上下文交换的机器指令，这些指令组合在一起就形成了原子操作。在多核 CPU 下，当某个 CPU 核心开始运行原子操作时，会先暂停其它 CPU 内核对内存的操作，以保证原子操作不会被其它 CPU 内核所干扰。
+
+由于原子操作是通过指令提供的支持，因此它的性能相比锁和消息传递会好很多。相比较于锁而言，原子类型不需要开发者处理加锁和释放锁的问题，同时支持修改，读取等操作，还具备较高的并发性能，几乎所有的语言都支持原子类型。
+
+可以看出原子类型是无锁类型，但是无锁不代表无需等待，因为原子类型内部使用了 CAS 循环，当大量的冲突发生时，该等待还是得等待！但是总归比锁要好。 CAS 全称是 Compare and swap, 它通过一条指令读取指定的内存地址，然后判断其中的值是否等于给定的前置值，如果相等，则将其修改为新的值
+
+
+### 主要代码
+
+使用 AtomicI64 原子整数类型，支持在多个线程之间安全地共享和修改一个 i64 类型的值，而无需使用互斥锁或其他同步机制。
+
+```rust
+#[derive(Debug)]
+pub struct AmapMetrics {
+    data: Arc<HashMap<&'static str, AtomicI64>>,
+}
+```
+
+fetch_add 方法接收两个参数：要增加的值（在这里是 1）和一个内存顺序（在这里是 Ordering::Relaxed）。
+Ordering::Relaxed 表示这个操作不需要与其他操作保持同步或顺序关系。这是最宽松的内存顺序，只保证了基本的原子性，不保证操作的顺序性。这意味着，在多线程环境中，不同线程看到的操作顺序可能会不同。
+如果需要保证操作的顺序性，可以使用 Ordering::SeqCst（顺序一致性）。 参考：https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html
+
+```rust
+pub fn inc(&self, key: impl AsRef<str>) -> Result<()> {
+  let key = key.as_ref();
+  let counter = self
+      .data
+      .get(key)
+      .ok_or_else(|| anyhow::anyhow!("key {} not found", key))?;
+  counter.fetch_add(1, Ordering::Relaxed);
+  Ok(())
+}
+```
+
+### 验证效果
+
+```bash
+cargo run --example ametrics
+
+call.thread.worker.0: 1
+req.page.2: 7
+call.thread.worker.1: 1
+req.page.1: 2
+req.page.4: 4
+req.page.3: 4
+
+call.thread.worker.0: 2
+req.page.2: 13
+call.thread.worker.1: 2
+req.page.1: 6
+req.page.4: 6
+req.page.3: 9
+```
 
 ## 参考资料
 
 - [Rust 无畏并发](https://kaisery.github.io/trpl-zh-cn/ch16-00-concurrency.html)
 - [透过 rust 探索系统的本原：并发篇](https://mp.weixin.qq.com/s/9g0wVT-5PpmXRoKJZo-skA)
+- [线程同步：Atomic 原子类型与内存顺序](https://course.rs/advance/concurrency-with-threads/sync2.html)
